@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบจัดตารางเวรอัตโนมัติ</title>
+    <!-- โหลด Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- โหลด Vue.js -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>
+        body { font-family: 'Sarabun', sans-serif; }
+        @media print {
+            .no-print { display: none !important; }
+            body { background-color: white !important; color: black !important; }
+            .print-table { border-collapse: collapse; width: 100%; }
+            .print-table th, .print-table td { border: 1px solid #000; padding: 8px; }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen p-4 md:p-8">
+    <div id="app" class="max-w-4xl mx-auto">
+        
+        <!-- Header -->
+        <div class="flex flex-col md:flex-row justify-between items-center mb-8 border-b border-gray-700 pb-4 no-print">
+            <h1 class="text-2xl font-bold text-blue-400">ระบบจัดตารางเวรประจำเดือน</h1>
+            <div class="flex gap-2 mt-4 md:mt-0">
+                <button @click="loadStaffs" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm transition">
+                    {{ isLoading ? 'กำลังโหลด...' : 'รีเฟรชข้อมูลจาก Sheet' }}
+                </button>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg mb-8 no-print border border-gray-700">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">เดือน</label>
+                    <select v-model="selectedMonth" class="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white">
+                        <option v-for="(m, index) in months" :value="index">{{ m }}</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">พ.ศ.</label>
+                    <input type="number" v-model="selectedYear" class="w-full bg-gray-900 border border-gray-700 rounded p-2 text-white">
+                </div>
+                <div class="flex items-end gap-2">
+                    <button @click="generateSchedule" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded w-full font-bold transition">
+                        สุ่มตารางเวร
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Schedule Table -->
+        <div v-if="schedule.length > 0" class="bg-white md:bg-gray-800 text-black md:text-gray-200 p-6 rounded-lg">
+            <h2 class="text-xl font-bold mb-4 text-center">
+                ตารางเวรประจำเดือน {{ months[selectedMonth] }} {{ selectedYear }}
+            </h2>
+            
+            <table class="print-table w-full text-left mb-6">
+                <thead>
+                    <tr class="bg-gray-200 md:bg-gray-900 text-gray-800 md:text-gray-300">
+                        <th class="p-3 border-b md:border-gray-700 w-20 text-center">วันที่</th>
+                        <th class="p-3 border-b md:border-gray-700">ชื่อเจ้าหน้าที่</th>
+                        <th class="p-3 border-b md:border-gray-700">ตำแหน่ง</th>
+                        <th class="p-3 border-b md:border-gray-700 w-32 text-center">ลายมือชื่อ</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr v-for="slot in schedule" :key="slot.day" class="border-b md:border-gray-700">
+                        <td class="p-3 text-center font-bold">{{ slot.day }}</td>
+                        <td class="p-3" :class="{'text-red-500': slot.status === 'ERROR'}">{{ slot.staff }}</td>
+                        <td class="p-3 text-sm text-gray-600 md:text-gray-400">{{ slot.position }}</td>
+                        <td class="p-3"></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="flex justify-end gap-4 no-print">
+                <button @click="printPage" class="bg-gray-600 hover:bg-gray-500 text-white px-6 py-2 rounded">พิมพ์ตาราง (PDF)</button>
+                <button @click="saveToSheet" class="bg-green-600 hover:bg-green-500 text-white px-6 py-2 rounded" :disabled="isSaving">
+                    {{ isSaving ? 'กำลังบันทึก...' : 'บันทึกลง Google Sheet' }}
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        // *** เอา URL ที่ได้จากขั้นตอนที่ 2 มาใส่ในเครื่องหมายคำพูดด้านล่างนี้ ***
+        const WEB_APP_URL = 'นhttps://script.google.com/macros/s/AKfycbzFNyUBENSOWidiKBrFUrsNc3wgnKkc_FKUDbljLA8wx-ZN2rBmPJauu6r3ujwXx3ax8Q/exec'; 
+
+        createApp({
+            data() {
+                const now = new Date();
+                return {
+                    months: ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน","กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"],
+                    selectedMonth: now.getMonth(),
+                    selectedYear: now.getFullYear() + 543, // พ.ศ.
+                    staffs: [],
+                    schedule: [],
+                    isLoading: false,
+                    isSaving: false
+                }
+            },
+            mounted() {
+                if(WEB_APP_URL !== 'นำ_URL_มาวางที่นี่') {
+                    this.loadStaffs();
+                } else {
+                    alert('กรุณาตั้งค่า WEB_APP_URL ในโค้ดก่อนใช้งาน');
+                }
+            },
+            methods: {
+                async loadStaffs() {
+                    this.isLoading = true;
+                    try {
+                        const response = await fetch(WEB_APP_URL);
+                        const data = await response.json();
+                        this.staffs = data;
+                        alert('โหลดข้อมูลเจ้าหน้าที่เรียบร้อย (' + this.staffs.length + ' คน)');
+                    } catch (error) {
+                        alert('เกิดข้อผิดพลาดในการโหลดข้อมูล');
+                        console.error(error);
+                    }
+                    this.isLoading = false;
+                },
+                generateSchedule() {
+                    if (this.staffs.length === 0) {
+                        alert("ไม่มีข้อมูลเจ้าหน้าที่ กรุณาโหลดข้อมูลก่อน");
+                        return;
+                    }
+
+                    // คำนวณจำนวนวันในเดือนนั้นๆ
+                    const gregorianYear = this.selectedYear - 543;
+                    const daysInMonth = new Date(gregorianYear, this.selectedMonth + 1, 0).getDate();
+                    
+                    let newSchedule = [];
+                    let tracker = this.staffs.map(s => ({
+                        ...s,
+                        workedDays: 0,
+                        consecutiveOff: 0,
+                        targetWorkDays: daysInMonth - s.maxDaysOff 
+                    }));
+
+                    for (let day = 1; day <= daysInMonth; day++) {
+                        let eligible = tracker.filter(s => {
+                            if (s.specificDaysOff.includes(day)) return false;
+                            if (s.workedDays >= s.targetWorkDays) return false;
+                            return true;
+                        });
+
+                        let mustWork = eligible.filter(s => s.consecutiveOff >= s.maxConsecutiveOff);
+                        let candidates = mustWork.length > 0 ? mustWork : eligible;
+                        
+                        // สุ่มคนที่เข้าเวรน้อยสุดมาก่อน
+                        candidates.sort((a, b) => a.workedDays - b.workedDays);
+                        let assignedStaff = candidates.length > 0 ? candidates[0] : null;
+
+                        if (assignedStaff) {
+                            newSchedule.push({ 
+                                day, 
+                                staff: assignedStaff.name, 
+                                position: assignedStaff.position, 
+                                status: 'OK' 
+                            });
+                            
+                            tracker.forEach(s => {
+                                if (s.id === assignedStaff.id) {
+                                    s.workedDays += 1;
+                                    s.consecutiveOff = 0;
+                                } else {
+                                    s.consecutiveOff += 1;
+                                }
+                            });
+                        } else {
+                            newSchedule.push({ day, staff: 'ไม่มีเจ้าหน้าที่ (เงื่อนไขขัดแย้ง)', position: '-', status: 'ERROR' });
+                        }
+                    }
+                    this.schedule = newSchedule;
+                },
+                async saveToSheet() {
+                    this.isSaving = true;
+                    try {
+                        const payload = {
+                            monthYear: `${this.months[this.selectedMonth]} ${this.selectedYear}`,
+                            schedule: this.schedule
+                        };
+                        
+                        await fetch(WEB_APP_URL, {
+                            method: 'POST',
+                            body: JSON.stringify(payload),
+                            headers: { 'Content-Type': 'text/plain;charset=utf-8' } // ป้องกันปัญหา CORS
+                        });
+                        
+                        alert('บันทึกข้อมูลลง Google Sheet สำเร็จ!');
+                    } catch (error) {
+                        alert('เกิดข้อผิดพลาดในการบันทึก');
+                        console.error(error);
+                    }
+                    this.isSaving = false;
+                },
+                printPage() {
+                    window.print();
+                }
+            }
+        });
+    </script>
+</body>
+</html>
